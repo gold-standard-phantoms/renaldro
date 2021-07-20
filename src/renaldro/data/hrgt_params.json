@@ -1,0 +1,18 @@
+{
+  "label_values": [0, 1, 2],
+  "label_names": ["background", "cortex", "medulla"],
+  "quantities": {
+    "perfusion_rate": [0.0, 238.9, 60.0],
+    "transit_time": [0.0, 1.141, 1.123],
+    "t1": [0.0, 1.376, 1.651],
+    "t2": [0.0, 0.076, 0.081],
+    "t2_star": [0.0, 0.05, 0.03],
+    "m0": [0.0, 225.0, 225.0]
+  },
+  "units": ["ml/100g/min", "s", "s", "s", "s", ""],
+  "parameters": {
+    "t1_arterial_blood": 1.2,
+    "lambda_blood_brain": 0.9,
+    "magnetic_field_strength": 3.0
+  }
+}

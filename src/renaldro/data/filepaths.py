@@ -20,3 +20,5 @@ ASL_RBF_DATA = {
 }
 
 LABEL_MAP_DATA = {"nifti": os.path.join(DATA_DIR, "Label_Map_cortex_medulla.nii.gz")}
+
+HRGT_PARAMS = os.path.join(DATA_DIR, "hrgt_params.json")
