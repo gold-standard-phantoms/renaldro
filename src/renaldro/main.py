@@ -2,6 +2,9 @@ import os
 import argparse
 import pdb
 import shutil
+from typing import List
+import matplotlib.pyplot as plt
+import imageio
 from copy import deepcopy
 from tempfile import TemporaryDirectory
 from contextlib import nullcontext
@@ -220,51 +223,93 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
 
         for hrgt in [hrgt_simple, hrgt_real_rbf]:
             dro_params = generate_asldro_params(hrgt)
-            dro_out_fn = os.path.join(save_dir, "dro_out_ss_" + hrgt["name"] + ".zip")
+            dro_out_fn = os.path.join(save_dir, "dro_out_" + hrgt["name"] + ".zip")
             out["dro_out_" + hrgt["name"]] = run_full_pipeline(dro_params, dro_out_fn)
             out["dro_out_" + hrgt["name"]]["params"] = dro_params
 
             # unpack the archive
-            dro_out_folder = os.path.join(save_dir, "dro_out_ss_" + hrgt["name"])
+            dro_out_folder = os.path.join(save_dir, "dro_out_" + hrgt["name"])
             shutil.unpack_archive(dro_out_fn, dro_out_folder)
 
             # generate difference images for the single PLD data
 
             # asl data are in /sub-001/perf
-            ss_asl_base = os.path.join(
-                dro_out_folder, "sub-001", "perf", "sub-001_acq-002_asl"
-            )
-            ss_asl_fn = os.path.join(ss_asl_base + ".nii.gz")
-            ss_asl_sidecar_fn = os.path.join(ss_asl_base + ".json")
-            ss_asl_context_fn = os.path.join(ss_asl_base + "context.tsv")
             m0_fn = os.path.join(
                 dro_out_folder, "sub-001", "perf", "sub-001_acq-001_m0scan.nii.gz"
             )
-            asl_loader = LoadAslBidsFilter()
-            asl_loader.add_input(LoadAslBidsFilter.KEY_IMAGE_FILENAME, ss_asl_fn)
-            asl_loader.add_input(
-                LoadAslBidsFilter.KEY_SIDECAR_FILENAME, ss_asl_sidecar_fn
-            )
-            asl_loader.add_input(
-                LoadAslBidsFilter.KEY_ASLCONTEXT_FILENAME, ss_asl_context_fn
-            )
-            asl_loader.run()
-
             m0_loader = NiftiLoaderFilter()
             m0_loader.add_input("filename", m0_fn)
             m0_loader.run()
+            m0_data = np.squeeze(m0_loader.outputs["image"].image)
+            m0_mask = m0_data > np.amax(m0_data) * 0.05  # threshold mask
 
-            # subtract to get the difference
-            ss_diff: NiftiImageContainer = asl_loader.outputs[
-                LoadAslBidsFilter.KEY_CONTROL
-            ].clone()
-            ss_diff.image = (
-                asl_loader.outputs[LoadAslBidsFilter.KEY_CONTROL].image
-                - asl_loader.outputs[LoadAslBidsFilter.KEY_LABEL].image
-            )
+            fn_base = {
+                "single_pld": os.path.join(
+                    dro_out_folder,
+                    "sub-001",
+                    "perf",
+                    "sub-001_acq-002_asl",
+                ),
+                "multi_pld": os.path.join(
+                    dro_out_folder,
+                    "sub-001",
+                    "perf",
+                    "sub-001_acq-003_asl",
+                ),
+            }
 
-            ss_diff_fn = os.path.join(ss_asl_base + "_diff.nii.gz")
-            nib.save(ss_diff.nifti_image, ss_diff_fn)
+            for series in ["single_pld", "multi_pld"]:
+                asl_fn = os.path.join(fn_base[series] + ".nii.gz")
+                asl_sidecar_fn = os.path.join(fn_base[series] + ".json")
+                asl_context_fn = os.path.join(fn_base[series] + "context.tsv")
+                asl_loader = LoadAslBidsFilter()
+                asl_loader.add_input(LoadAslBidsFilter.KEY_IMAGE_FILENAME, asl_fn)
+                asl_loader.add_input(
+                    LoadAslBidsFilter.KEY_SIDECAR_FILENAME, asl_sidecar_fn
+                )
+                asl_loader.add_input(
+                    LoadAslBidsFilter.KEY_ASLCONTEXT_FILENAME, asl_context_fn
+                )
+                asl_loader.run()
+
+                # subtract to get the difference
+                diff: NiftiImageContainer = asl_loader.outputs[
+                    LoadAslBidsFilter.KEY_CONTROL
+                ].clone()
+                diff.image = (
+                    asl_loader.outputs[LoadAslBidsFilter.KEY_CONTROL].image
+                    - asl_loader.outputs[LoadAslBidsFilter.KEY_LABEL].image
+                )
+                # calculate Delta M / M0
+                diff_norm = diff.clone()
+                diff_norm.image = np.divide(
+                    diff.image,
+                    np.expand_dims(m0_data, axis=3)
+                    if len(diff.shape) == 4
+                    else m0_data,
+                    out=np.zeros_like(diff.image),
+                    where=np.expand_dims(m0_mask, axis=3)
+                    if len(diff.shape) == 4
+                    else m0_mask,
+                )
+
+                diff_fn = os.path.join(fn_base[series] + "_diff.nii.gz")
+                diff_norm_fn = os.path.join(fn_base[series] + "_diff_normalised.nii.gz")
+                nib.save(diff.nifti_image, diff_fn)
+                nib.save(diff_norm.nifti_image, diff_norm_fn)
+
+                # create a gif of the timeseries
+                if len(diff.shape) == 4:
+                    nifti_timeseries_to_gif(
+                        diff_norm,
+                        10,
+                        os.path.join(fn_base[series] + "_diff_normalised.gif"),
+                        annotation_text=[
+                            f"Label Duration = {diff.metadata['LabelingDuration']:.2f} \n"
+                            f"PLD = {pld:.2f}"
+                            for i, pld in enumerate(diff.metadata["PostLabelingDelay"])
+                        ],
+                    )
 
     return out
 
@@ -278,16 +323,24 @@ def generate_asldro_params(hrgt: dict) -> dict:
         "nii": hrgt["nifti"],
         "json": hrgt["json"],
     }
+    acq_matrix = [64, 64, 20]
+    # copy the ground truth series to add at the end
+    ground_truth_params = input_params["image_series"][
+        [x["series_type"] for x in input_params["image_series"]].index("ground_truth")
+    ]
+    ground_truth_params["series_parameters"]["acq_matrix"] = acq_matrix
     # remove non-ASL series
     input_params["image_series"] = [
         x for x in input_params["image_series"] if x["series_type"] in ["asl"]
     ]
 
     ## M0 series
-    n = 0
     input_params["image_series"][0]["series_description"] = "M0 " + hrgt["name"]
+    input_params["image_series"][0]["series_parameters"][
+        "background_suppression"
+    ] = False
     input_params["image_series"][0]["series_parameters"]["desired_snr"] = 500
-    input_params["image_series"][0]["series_parameters"]["acq_matrix"] = [64, 64, 20]
+    input_params["image_series"][0]["series_parameters"]["acq_matrix"] = acq_matrix
     input_params["image_series"][0]["series_parameters"]["asl_context"] = "m0scan"
 
     ## Single PLD series comprising control and label
@@ -299,18 +352,18 @@ def generate_asldro_params(hrgt: dict) -> dict:
         "asl_context"
     ] = "control label"
 
-    # ## Multi PLD series comprising control and label for PLD = 0 to 3.0s in 0.25s steps
-    # input_params["image_series"].append(deepcopy(input_params["image_series"][0]))
-    # input_params["image_series"][2]["series_description"] = (
-    #     "ASL Multi PLD " + hrgt["name"]
-    # )
-    # input_params["image_series"][2]["series_parameters"][
-    #     "asl_context"
-    # ] = "control label"
-    # label_dur = input_params["image_series"][2]["series_parameters"]["label_duration"]
-    # input_params["image_series"][2]["series_parameters"]["signal_time"] = list(
-    #     np.array(label_dur) + np.arange(0, 3.25, 0.25)
-    # )
+    ## Multi PLD series comprising control and label for PLD = 0 to 3.0s in 0.25s steps
+    input_params["image_series"].append(deepcopy(input_params["image_series"][0]))
+    input_params["image_series"][2]["series_description"] = (
+        "ASL Multi PLD " + hrgt["name"]
+    )
+    input_params["image_series"][2]["series_parameters"][
+        "asl_context"
+    ] = "control label"
+    label_dur = input_params["image_series"][2]["series_parameters"]["label_duration"]
+    input_params["image_series"][2]["series_parameters"]["signal_time"] = list(
+        np.array(label_dur) + np.arange(0, 3.25, 0.25)
+    )
 
     # set all the array parameters accordingly
     for n, _ in enumerate(input_params["image_series"]):
@@ -325,8 +378,58 @@ def generate_asldro_params(hrgt: dict) -> dict:
                 for param in ARRAY_PARAMS
             },
         }
+    input_params["image_series"].append(ground_truth_params)
 
     return input_params
+
+
+def nifti_timeseries_to_gif(
+    image: NiftiImageContainer,
+    slc: int,
+    filename: str,
+    colourmap: str = "plasma",
+    annotation_text: List[str] = None,
+):
+    with TemporaryDirectory() as gif_temp_dir:
+        filenames = []
+        num_images = image.shape[3]
+        ny = image.shape[0]
+        nx = image.shape[1]
+        if annotation_text is not None:
+            if len(annotation_text) != num_images:
+                raise ValueError(
+                    "number of annotations must match the timeseries length"
+                )
+        vmin = np.amin(image.image)
+        vmax = np.amax(image.image)
+        for idx in range(num_images):
+            f, ax = plt.subplots()
+            plt.imshow(
+                np.fliplr(np.rot90(image.image[:, :, slc, idx])),
+                vmin=vmin,
+                vmax=vmax,
+                cmap=colourmap,
+            )
+            plt.colorbar()
+            plt.text(
+                0,
+                1.05,
+                annotation_text[idx] if annotation_text is not None else None,
+                transform=ax.transAxes,
+            )
+            plt.show(block=False)
+            filenames.append(os.path.join(gif_temp_dir, f"{idx}.png"))
+            plt.savefig(filenames[idx])
+            plt.close()
+
+        with imageio.get_writer(filename, mode="I", fps=1) as writer:
+            for filename in filenames:
+                image = imageio.imread(filename)
+                writer.append_data(image)
+
+        # remove png images
+        for filename in set(filenames):
+            os.remove(filename)
 
 
 if __name__ == "__main__":
