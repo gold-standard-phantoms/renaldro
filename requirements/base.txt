@@ -2,3 +2,5 @@ asldro @ git+git://github.com/gold-standard-phantoms/asldro.git@develop
 numpy==1.19.0
 nilearn==0.6.2
 gitpython==3.1.18
+matplotlib==3.4.2
+imageio==2.9.0

@@ -1,4 +1,5 @@
 import sys
+from asldro.containers.image import NiftiImageContainer
 import numpy as np
 import json
 import os
@@ -10,7 +11,12 @@ from unittest.mock import patch
 from tempfile import TemporaryDirectory
 import nibabel as nib
 import numpy.testing
-from renaldro.main import main, generate_renal_ground_truth, generate_asldro_params
+from renaldro.main import (
+    main,
+    generate_renal_ground_truth,
+    generate_asldro_params,
+    nifti_timeseries_to_gif,
+)
 from renaldro.data.filepaths import DATA_DIR
 
 
@@ -74,14 +80,8 @@ def test_generate_renal_ground_truth():
                 nifti_loader.outputs["image"].image, out[hrgt]["image"].image
             )
 
-            assert os.path.exists(os.path.join(temp_dir, "dro_out_ss_hrgt_simple.zip"))
-            assert os.path.exists(
-                os.path.join(temp_dir, "dro_out_ss_hrgt_real_rbf.zip")
-            )
-
-            asl_simple = out["dro_out_hrgt_simple"]["asldro_output"][0]
-
-            gt_m0 = out["dro_out_hrgt_simple"]["hrgt"]["m0"]
+            assert os.path.exists(os.path.join(temp_dir, "dro_out_hrgt_simple.zip"))
+            assert os.path.exists(os.path.join(temp_dir, "dro_out_hrgt_real_rbf.zip"))
 
 
 def test_main_cli():
@@ -106,4 +106,68 @@ def test_generate_asldro_params():
         "nii": "path/to/hrgt.nii.gz",
         "json": "path/to/hrgt.json",
     }
-    assert params["image_series"][0]["series_type"] == "asl"
+    assert [
+        params["image_series"][n]["series_type"]
+        for n, _ in enumerate(params["image_series"])
+    ] == ["asl", "asl", "asl", "ground_truth"]
+
+    assert all(
+        [
+            params["image_series"][n]["series_parameters"]["acq_matrix"] == [64, 64, 20]
+            for n, _ in enumerate(params["image_series"])
+        ]
+    )
+
+    assert params["image_series"][0]["series_parameters"]["asl_context"] == "m0scan"
+    assert (
+        params["image_series"][1]["series_parameters"]["asl_context"] == "control label"
+    )
+    assert (
+        params["image_series"][2]["series_parameters"]["asl_context"] == "control label"
+    )
+
+    numpy.testing.assert_array_equal(
+        params["image_series"][2]["series_parameters"]["signal_time"],
+        [
+            1.8,
+            2.05,
+            2.30,
+            2.55,
+            2.80,
+            3.05,
+            3.30,
+            3.55,
+            3.80,
+            4.05,
+            4.30,
+            4.55,
+            4.80,
+        ],
+    )
+
+
+def test_nifti_timeseries_to_gif():
+    """Tests the nifti_timeseries_to_gif function"""
+    image_4d = NiftiImageContainer(
+        nib.Nifti1Image(
+            np.stack([np.ones((3, 3, 3)) * i for i in range(10)], axis=3),
+            affine=np.eye(4),
+        )
+    )
+    text = [f"im = {n}" for n in range(10)]
+    with TemporaryDirectory() as temp_dir:
+
+        with pytest.raises(ValueError):
+            nifti_timeseries_to_gif(
+                image_4d,
+                1,
+                os.path.join(temp_dir, "animation.gif"),
+                annotation_text=text[:9],
+            )
+
+        nifti_timeseries_to_gif(image_4d, 1, os.path.join(temp_dir, "animation.gif"))
+        nifti_timeseries_to_gif(
+            image_4d, 1, os.path.join(temp_dir, "animation.gif"), annotation_text=text
+        )
+
+        assert os.path.exists(os.path.join(temp_dir, "animation.gif"))
