@@ -117,10 +117,12 @@ def test_generate_asldro_params():
             for n, _ in enumerate(params["image_series"])
         ]
     )
-
+    assert params["image_series"][1]["series_parameters"]["gkm_model"] == "whitepaper"
+    assert params["image_series"][2]["series_parameters"]["gkm_model"] == "full"
     assert params["image_series"][0]["series_parameters"]["asl_context"] == "m0scan"
     assert (
-        params["image_series"][1]["series_parameters"]["asl_context"] == "control label"
+        params["image_series"][1]["series_parameters"]["asl_context"]
+        == "m0scan control label"
     )
     assert (
         params["image_series"][2]["series_parameters"]["asl_context"] == "control label"
@@ -150,10 +152,11 @@ def test_nifti_timeseries_to_gif():
     """Tests the nifti_timeseries_to_gif function"""
     image_4d = NiftiImageContainer(
         nib.Nifti1Image(
-            np.stack([np.ones((3, 3, 3)) * i for i in range(10)], axis=3),
+            np.stack([np.ones((64, 64, 10)) * i for i in range(10)], axis=3),
             affine=np.eye(4),
         )
     )
+    image_4d.image[31:33, 31:33:, :] = 11
     text = [f"im = {n}" for n in range(10)]
     with TemporaryDirectory() as temp_dir:
 
@@ -166,8 +169,14 @@ def test_nifti_timeseries_to_gif():
             )
 
         nifti_timeseries_to_gif(image_4d, 1, os.path.join(temp_dir, "animation.gif"))
+        assert os.path.exists(os.path.join(temp_dir, "animation.gif"))
         nifti_timeseries_to_gif(
-            image_4d, 1, os.path.join(temp_dir, "animation.gif"), annotation_text=text
+            image_4d,
+            1,
+            os.path.join(temp_dir, "animation.gif"),
+            annotation_text=text,
+            cbar_text=r"$\frac{\Delta M}{M0}$",
+            axis_lims=[16, 48, 16, 48],
         )
 
         assert os.path.exists(os.path.join(temp_dir, "animation.gif"))

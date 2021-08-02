@@ -16,6 +16,7 @@ from asldro.filters.nifti_loader import NiftiLoaderFilter
 from asldro.pipelines.generate_ground_truth import generate_hrgt
 from asldro.filters.bids_output_filter import BidsOutputFilter
 from asldro.filters.load_asl_bids_filter import LoadAslBidsFilter
+from asldro.pipelines.asl_quantification import asl_quantification
 from asldro.utils.general import splitext
 from asldro.cli import DirType
 from asldro.examples import run_full_pipeline
@@ -50,23 +51,10 @@ TRANSF_PARAMS = [
 ARRAY_PARAMS = [ECHO_TIME, REPETITION_TIME] + TRANSF_PARAMS
 
 ARRAY_PARAM_DEFAULT = {
-    ECHO_TIME: {
-        "m0scan": 0.01,
-        "control": 0.01,
-        "label": 0.01,
-    },
-    REPETITION_TIME: {
-        "m0scan": 10.0,
-        "control": 5.0,
-        "label": 5.0,
-    },
+    ECHO_TIME: {"m0scan": 0.01, "control": 0.01, "label": 0.01,},
+    REPETITION_TIME: {"m0scan": 10.0, "control": 5.0, "label": 5.0,},
     **{
-        param: {
-            "m0scan": 0.0,
-            "control": 0.0,
-            "label": 0.0,
-        }
-        for param in TRANSF_PARAMS
+        param: {"m0scan": 0.0, "control": 0.0, "label": 0.0,} for param in TRANSF_PARAMS
     },
 }
 
@@ -245,16 +233,10 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
 
             fn_base = {
                 "single_pld": os.path.join(
-                    dro_out_folder,
-                    "sub-001",
-                    "perf",
-                    "sub-001_acq-002_asl",
+                    dro_out_folder, "sub-001", "perf", "sub-001_acq-002_asl",
                 ),
                 "multi_pld": os.path.join(
-                    dro_out_folder,
-                    "sub-001",
-                    "perf",
-                    "sub-001_acq-003_asl",
+                    dro_out_folder, "sub-001", "perf", "sub-001_acq-003_asl",
                 ),
             }
 
@@ -298,8 +280,35 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
                 nib.save(diff.nifti_image, diff_fn)
                 nib.save(diff_norm.nifti_image, diff_norm_fn)
 
+                # perform quantification of the single PLD dataset
+                if series == "single_pld":
+                    asl_quantification(
+                        asl_fn,
+                        output_dir=os.path.join(dro_out_folder, "sub-001", "perf"),
+                    )
+                    # load in the CBF file, apply the mask
+                    cbf_fn = fn_base[series] + "_cbf.nii.gz"
+                    cbf_loader = NiftiLoaderFilter()
+                    cbf_loader.add_input("filename", cbf_fn)
+                    cbf_loader.run()
+                    cbf_image = cbf_loader.outputs["image"]
+                    cbf_image.image = cbf_image.image * m0_mask
+                    nib.save(cbf_image.nifti_image, cbf_fn)
+                    # create a png image of the middle slice
+                    f, ax = plt.subplots()
+                    plt.imshow(
+                        np.fliplr(np.rot90(cbf_image.image[:, :, 10])), cmap="plasma",
+                    )
+                    cbar = plt.colorbar()
+                    cbar.set_label(r"RBF (ml/100g/min)")
+                    plt.axis("off")
+                    plt.axis([12, 52, 48, 16])
+                    plt.show(block=False)
+                    plt.savefig(fn_base[series] + "_cbf.png")
+                    plt.close()
+
                 # create a gif of the timeseries
-                if len(diff.shape) == 4:
+                if series == "multi_pld":
                     nifti_timeseries_to_gif(
                         diff_norm,
                         10,
@@ -309,6 +318,7 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
                             f"PLD = {pld:.2f}"
                             for i, pld in enumerate(diff.metadata["PostLabelingDelay"])
                         ],
+                        cbar_text=r"$\frac{\Delta M}{M0}$",
                     )
 
     return out
@@ -343,16 +353,18 @@ def generate_asldro_params(hrgt: dict) -> dict:
     input_params["image_series"][0]["series_parameters"]["acq_matrix"] = acq_matrix
     input_params["image_series"][0]["series_parameters"]["asl_context"] = "m0scan"
 
-    ## Single PLD series comprising control and label
+    ## Single PLD series comprising m0scan, control and label using the whitepaper model
     input_params["image_series"].append(deepcopy(input_params["image_series"][0]))
     input_params["image_series"][1]["series_description"] = (
         "ASL Single PLD " + hrgt["name"]
     )
     input_params["image_series"][1]["series_parameters"][
         "asl_context"
-    ] = "control label"
+    ] = "m0scan control label"
+    input_params["image_series"][1]["series_parameters"]["gkm_model"] = "whitepaper"
 
     ## Multi PLD series comprising control and label for PLD = 0 to 3.0s in 0.25s steps
+    ## using the full general kinetic model
     input_params["image_series"].append(deepcopy(input_params["image_series"][0]))
     input_params["image_series"][2]["series_description"] = (
         "ASL Multi PLD " + hrgt["name"]
@@ -389,6 +401,8 @@ def nifti_timeseries_to_gif(
     filename: str,
     colourmap: str = "plasma",
     annotation_text: List[str] = None,
+    cbar_text: str = None,
+    axis_lims: List[int] = None,
 ):
     with TemporaryDirectory() as gif_temp_dir:
         filenames = []
@@ -410,13 +424,16 @@ def nifti_timeseries_to_gif(
                 vmax=vmax,
                 cmap=colourmap,
             )
-            plt.colorbar()
+            cbar = plt.colorbar()
+            cbar.set_label(cbar_text)
             plt.text(
                 0,
                 1.05,
                 annotation_text[idx] if annotation_text is not None else None,
                 transform=ax.transAxes,
             )
+            plt.axis("off")
+            plt.axis(axis_lims) if axis_lims is not None else None,
             plt.show(block=False)
             filenames.append(os.path.join(gif_temp_dir, f"{idx}.png"))
             plt.savefig(filenames[idx])
