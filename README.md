@@ -23,3 +23,16 @@ Anaconda:
 Take a single command line argument which is the directory to output files to:
 
     renaldro /path/to/output_directory
+
+## Changelog
+
+[1.0.0] = 02-08-2021
+
+Added:
+
+- Project repository set up with Continuous Integration
+- Data from iBEAt study
+- Generation of simple and realistic ground truths
+- Generation of DRO data for single and multi PLD
+- Calculation of RBF using single PLD data.
+- Generation of figures for Parenchima 2021 meeting abstract
