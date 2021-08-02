@@ -2,7 +2,7 @@
   "label_values": [0, 1, 2],
   "label_names": ["background", "cortex", "medulla"],
   "quantities": {
-    "perfusion_rate": [0.0, 238.9, 60.0],
+    "perfusion_rate": [0.0, 215.0, 81.0],
     "transit_time": [1e6, 1.141, 1.123],
     "t1": [0.0, 1.376, 1.651],
     "t2": [0.0, 0.076, 0.081],
