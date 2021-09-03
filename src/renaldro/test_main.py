@@ -157,7 +157,10 @@ def test_nifti_timeseries_to_gif():
         )
     )
     image_4d.image[31:33, 31:33:, :] = 11
+    image_4d.image[15, 15] = 11
+    image_4d.image[47, 47] = 11
     text = [f"im = {n}" for n in range(10)]
+    montage_text = [f"{n}" for n in range(10)]
     with TemporaryDirectory() as temp_dir:
 
         with pytest.raises(ValueError):
@@ -180,3 +183,14 @@ def test_nifti_timeseries_to_gif():
         )
 
         assert os.path.exists(os.path.join(temp_dir, "animation.gif"))
+        assert os.path.exists(os.path.join(temp_dir, "animation.png"))
+
+        # nifti_timeseries_to_gif(
+        #     image_4d,
+        #     1,
+        #     os.path.join("D:\\", "animation.gif"),
+        #     annotation_text=text,
+        #     cbar_text=r"$\frac{\Delta M}{M0}$",
+        #     axis_lims=[16, 48, 16, 48],
+        #     montage_annotation_text=montage_text,
+        # )
