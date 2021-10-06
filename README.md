@@ -26,6 +26,12 @@ Take a single command line argument which is the directory to output files to:
 
 ## Changelog
 
+[1.1.1] - 2021-10-06
+
+Added:
+
+- MIT License
+
 [1.1.0] - 2021-10-06
 
 Added:
