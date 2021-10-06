@@ -26,7 +26,13 @@ Take a single command line argument which is the directory to output files to:
 
 ## Changelog
 
-[1.0.0] = 02-08-2021
+[1.1.0] - 2021-10-06
+
+Added:
+
+- Generation of figures for Parenchima 2021 meeting poster
+
+[1.0.0] - 2021-08-02
 
 Added:
 

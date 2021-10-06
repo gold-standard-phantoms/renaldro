@@ -51,10 +51,23 @@ TRANSF_PARAMS = [
 ARRAY_PARAMS = [ECHO_TIME, REPETITION_TIME] + TRANSF_PARAMS
 
 ARRAY_PARAM_DEFAULT = {
-    ECHO_TIME: {"m0scan": 0.01, "control": 0.01, "label": 0.01,},
-    REPETITION_TIME: {"m0scan": 10.0, "control": 5.0, "label": 5.0,},
+    ECHO_TIME: {
+        "m0scan": 0.01,
+        "control": 0.01,
+        "label": 0.01,
+    },
+    REPETITION_TIME: {
+        "m0scan": 10.0,
+        "control": 5.0,
+        "label": 5.0,
+    },
     **{
-        param: {"m0scan": 0.0, "control": 0.0, "label": 0.0,} for param in TRANSF_PARAMS
+        param: {
+            "m0scan": 0.0,
+            "control": 0.0,
+            "label": 0.0,
+        }
+        for param in TRANSF_PARAMS
     },
 }
 
@@ -98,12 +111,17 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
     seg_loader = NiftiLoaderFilter()
     seg_loader.add_input("filename", LABEL_MAP_DATA["nifti"])
     seg_loader.run()
-    seg_image: NiftiImageContainer = seg_loader.outputs["image"]
+
     # load in the t1 image
     t1_loader = NiftiLoaderFilter()
     t1_loader.add_input("filename", T1_DATA["nifti"])
     t1_loader.run()
     t1_image: NiftiImageContainer = t1_loader.outputs["image"]
+
+    # there's an issue with the header of the seg image, so instead just copy the
+    # t1w image and then put the seg data in there
+    seg_image: NiftiImageContainer = t1_image.clone()
+    seg_image.image = seg_loader.outputs["image"].image
 
     # change the affine of the t1 image so that it is not oblique (this causes
     # problems for the TransformResampleImageFilter)
@@ -159,8 +177,10 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
     # new affine
     t1_image.nifti_image.set_sform(new_affine)
     seg_image.nifti_image.set_sform(new_affine)
-    rbf_image.nifti_image.set_sform(new_affine)
-    m0_image.nifti_image.set_sform(new_affine)
+    rbf_image = t1_image.clone()
+    rbf_image.image = rbf_resampler.outputs["image"].image
+    m0_image = t1_image.clone()
+    m0_image.image = m0_resampler.outputs["image"].image
     with TemporaryDirectory() as save_dir:
         seg_image_filename = os.path.join(save_dir, "seg_image.nii.gz")
         nib.save(seg_image.nifti_image, seg_image_filename)
@@ -209,6 +229,11 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
             nib.save(hrgt["image"].nifti_image, hrgt["nifti"])
             BidsOutputFilter.save_json(hrgt["image_info"], hrgt["json"])
 
+        nib.save(seg_image.nifti_image, os.path.join(save_dir, "seg_image.nii.gz"))
+        nib.save(t1_image.nifti_image, os.path.join(save_dir, "t1w_image.nii.gz"))
+        nib.save(rbf_image.nifti_image, os.path.join(save_dir, "rbf_image.nii.gz"))
+        nib.save(m0_image.nifti_image, os.path.join(save_dir, "m0_image.nii.gz"))
+
         for hrgt in [hrgt_simple, hrgt_real_rbf]:
             dro_params = generate_asldro_params(hrgt)
             dro_out_fn = os.path.join(save_dir, "dro_out_" + hrgt["name"] + ".zip")
@@ -233,10 +258,16 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
 
             fn_base = {
                 "single_pld": os.path.join(
-                    dro_out_folder, "sub-001", "perf", "sub-001_acq-002_asl",
+                    dro_out_folder,
+                    "sub-001",
+                    "perf",
+                    "sub-001_acq-002_asl",
                 ),
                 "multi_pld": os.path.join(
-                    dro_out_folder, "sub-001", "perf", "sub-001_acq-003_asl",
+                    dro_out_folder,
+                    "sub-001",
+                    "perf",
+                    "sub-001_acq-003_asl",
                 ),
             }
 
@@ -297,7 +328,8 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
                     # create a png image of the middle slice
                     f, ax = plt.subplots()
                     plt.imshow(
-                        np.fliplr(np.rot90(cbf_image.image[:, :, 10])), cmap="plasma",
+                        np.fliplr(np.rot90(cbf_image.image[:, :, 10])),
+                        cmap="plasma",
                     )
                     cbar = plt.colorbar()
                     cbar.set_label(r"RBF (ml/100g/min)")
@@ -318,7 +350,11 @@ def generate_renal_ground_truth(output_dir: str = None) -> dict:
                             f"PLD = {pld:.2f}"
                             for i, pld in enumerate(diff.metadata["PostLabelingDelay"])
                         ],
+                        axis_lims=[12, 52, 48, 16],
                         cbar_text=r"$\frac{\Delta M}{M0}$",
+                        montage_annotation_text=[
+                            f"{pld:.2f}" for pld in diff.metadata["PostLabelingDelay"]
+                        ],
                     )
 
     return out
@@ -403,6 +439,7 @@ def nifti_timeseries_to_gif(
     annotation_text: List[str] = None,
     cbar_text: str = None,
     axis_lims: List[int] = None,
+    montage_annotation_text: List[str] = None,
 ):
     with TemporaryDirectory() as gif_temp_dir:
         filenames = []
@@ -416,10 +453,36 @@ def nifti_timeseries_to_gif(
                 )
         vmin = np.amin(image.image)
         vmax = np.amax(image.image)
+        x_step = 1
+        y_step = 1
+        if axis_lims is not None:
+            x_lims = axis_lims[0:2]
+            y_lims = axis_lims[2:]
+            if x_lims[1] < x_lims[0]:
+                x_step = -1
+            if y_lims[1] < y_lims[0]:
+                y_step = -1
+            # x_lims.sort()
+            # y_lims.sort()
+        else:
+            x_lims = None
+            y_lims = None
+
+        im_list = []
         for idx in range(num_images):
             f, ax = plt.subplots()
+            im = np.fliplr(np.rot90(image.image[:, :, slc, idx]))
+
+            im_list.append(
+                im[
+                    y_lims[0] : y_lims[1] + 1 : y_step,
+                    x_lims[0] : x_lims[1] + 1 : x_step,
+                ]
+                if x_lims is not None
+                else im
+            )
             plt.imshow(
-                np.fliplr(np.rot90(image.image[:, :, slc, idx])),
+                im,
                 vmin=vmin,
                 vmax=vmax,
                 cmap=colourmap,
@@ -436,17 +499,47 @@ def nifti_timeseries_to_gif(
             plt.axis(axis_lims) if axis_lims is not None else None,
             plt.show(block=False)
             filenames.append(os.path.join(gif_temp_dir, f"{idx}.png"))
-            plt.savefig(filenames[idx])
+            plt.savefig(filenames[idx], bbox_inches="tight")
             plt.close()
 
         with imageio.get_writer(filename, mode="I", fps=1) as writer:
-            for filename in filenames:
-                image = imageio.imread(filename)
+            for fn in filenames:
+                image = imageio.imread(fn)
                 writer.append_data(image)
 
         # remove png images
-        for filename in set(filenames):
-            os.remove(filename)
+        for fn in set(filenames):
+            os.remove(fn)
+
+        # plot montage
+        montage = np.concatenate(im_list, axis=1)
+        montage_shape = montage.shape
+        cm = 1 / 2.54
+        px = 1 / plt.rcParams["figure.dpi"]
+        f, ax = plt.subplots(
+            figsize=(2 * montage_shape[1] * px, 2 * montage_shape[0] * px)
+        )
+        plt.imshow(montage, vmin=vmin, vmax=vmax, cmap=colourmap)
+
+        plt.axis("off")
+        plt.axis([0, montage_shape[1], 0, montage_shape[0]])
+        plt.show(block=False)
+        cbar = plt.colorbar()
+        cbar.set_label(cbar_text)
+        [
+            plt.text(
+                idx / num_images,
+                1.05,
+                montage_annotation_text[idx]
+                if montage_annotation_text is not None
+                else None,
+                transform=ax.transAxes,
+            )
+            for idx in range(num_images)
+        ]
+        base_filename, _ = splitext(filename)
+        plt.savefig(base_filename + ".png", bbox_inches="tight", dpi=300)
+        plt.close()
 
 
 if __name__ == "__main__":
